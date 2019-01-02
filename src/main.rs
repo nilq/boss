@@ -2,6 +2,7 @@ mod boss;
 
 use self::boss::source::*;
 use self::boss::lexer::*;
+use self::boss::parser::*;
 
 fn main() {
   let test = r#"
