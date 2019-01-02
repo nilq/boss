@@ -95,6 +95,7 @@ impl PartialEq for TypeNode {
 
     match (self, other) {
       (&Int(size_a),                         &Int(size_b))                         => size_a == size_b,
+      (&UInt(size_a),                        &UInt(size_b))                        => size_a == size_b,
       (&Str,                                 &Str)                                 => true,
       (&Float(size_a),                       &Float(size_b))                       => size_a == size_b,
       (&Char,                                &Char)                                => true,
@@ -129,7 +130,7 @@ pub enum TypeMode {
 }
 
 impl TypeMode {
-  pub fn check(&self, other: &TypeMode) -> bool {
+  pub fn strong_cmp(&self, other: &TypeMode) -> bool {
     use self::TypeMode::*;
 
     match (self, other) {
@@ -353,6 +354,122 @@ impl<'v> Visitor<'v> {
     match statement.node {
       Expression(ref expr) => self.visit_expression(expr),
       Variable(..)         => self.visit_variable(&statement.node, &statement.pos),
+
+      Implement(ref name, ref body) => {
+        use self::ExpressionNode::*;
+
+        self.visit_expression(name)?;
+
+        self.push_scope();
+
+        let t = self.type_expression(name)?;
+        self.assign_str("Self", t);
+
+        let position = name.pos.clone();
+
+        match name.node {
+          Identifier(ref name) => {
+            let kind = self.fetch(name, &position)?;
+
+            self.inside.push(Inside::Implement(kind.clone()));
+
+            if let TypeNode::Struct(struct_name, content, id) = kind.node.clone() {
+              if kind.mode.strong_cmp(&TypeMode::Undeclared) {
+                let mut new_content = content;
+
+                if let ExpressionNode::Block(ref ast) = body.node {
+                  self.visit_implement_block(
+                    ast,
+                    &struct_name,
+                    &new_content,
+                    &id,
+                    &kind,
+                    None,
+                    false,
+                  )?;
+                }
+
+                self.inside.pop();
+
+                self.pop_scope();
+
+                return Ok(())
+              }
+
+              Err(
+                response!(
+                  Wrong(format!("can't implement type `{}`", kind)),
+                  self.source.file,
+                  position
+                )
+              )
+            } else {
+              unreachable!()
+            }
+          },
+
+
+          Index(ref array, ref indexing) => {
+            if let Identifier(ref name) = array.node {
+              self.fetch(name, &position)?;
+              let array_type = self.type_expression(array)?;
+
+              match array_type.node {
+                TypeNode::Module(ref module_content) => {
+                  if let Identifier(ref name) = indexing.node {
+                    if let Some(ref kind) = module_content.get(name) {
+
+                      if let TypeNode::Struct(struct_name, content, id) = kind.node.clone() {
+                        if kind.mode.strong_cmp(&TypeMode::Undeclared) {
+                          let mut new_content = content;
+
+                          if let ExpressionNode::Block(ref ast) = body.node {
+                            self.visit_implement_block(
+                              ast,
+                              &struct_name,
+                              &new_content,
+                              &id,
+                              &kind,
+                              Some(module_content),
+                              true,
+                            )?;                            
+                          }
+
+                          self.inside.pop();
+
+                          self.pop_scope();
+
+                          return Ok(())
+                        }
+                      }
+
+                    }
+                  }
+                },
+
+                ref kind => return Err(
+                  response!(
+                    Wrong(format!("can't implement type `{}`", kind)),
+                    self.source.file,
+                    position
+                  )
+                )
+              }
+            }
+
+            Ok(())
+          }
+
+
+          _ => return Err(
+            response!(
+              Wrong("can't implement anything but structs"),
+              self.source.file,
+              position
+            )
+          ),
+        }
+      },
     
       Assignment(ref left, ref right) => {
         self.visit_expression(left)?;
@@ -410,6 +527,60 @@ impl<'v> Visitor<'v> {
             )
           )
         }
+      },
+
+      Initialization(ref left, ref args) => {
+        let struct_type = self.type_expression(&*left)?;
+
+        if let TypeNode::Struct(ref name, ref content, _) = struct_type.node {
+          if struct_type.mode.strong_cmp(&TypeMode::Undeclared) {
+          
+            for arg in args.iter() {
+              self.visit_expression(&arg.1)?;
+
+              let arg_type = self.type_expression(&arg.1)?;
+
+              if let Some(ref content_type) = content.get(&arg.0) {
+                if !content_type.node.check_expression(&Parser::fold_expression(&arg.1)?.node) && arg_type != **content_type {
+                  return Err(
+                    response!(
+                      Wrong(format!("mismatched types, expected `{}` got `{}`", content_type, arg_type)),
+                      self.source.file,
+                      expression.pos
+                    )
+                  )
+                }
+              } else {
+                return Err(
+                  response!(
+                    Wrong(format!("no such member `{}` in struct `{}`", arg.0, name)),
+                    self.source.file,
+                    arg.1.pos
+                  )
+                )
+              }
+            }
+          
+          } else {
+            return Err(
+              response!(
+                Wrong(format!("can't initialize non-struct: `{}`", struct_type.node)),
+                self.source.file,
+                expression.pos
+              )
+            )
+          }
+        } else {
+          return Err(
+            response!(
+              Wrong(format!("can't initialize non-struct: `{}`", struct_type.node)),
+              self.source.file,
+              expression.pos
+            )
+          )
+        }
+
+        Ok(())
       },
 
       Block(ref statements) => {
@@ -670,7 +841,7 @@ impl<'v> Visitor<'v> {
       Function(ref params, ref retty, ref body, ref is_method) => {
         let mut frame_hash = HashMap::new();
 
-        let mut return_type = retty.clone();
+        let mut return_type = self.deid(retty.clone())?;
 
         if let TypeNode::Id(ref ident) = retty.node {
           self.visit_expression(&ident)?;
@@ -879,8 +1050,6 @@ impl<'v> Visitor<'v> {
 
       variable_type = Type::from(variable_type.node.clone());
 
-      self.assign(name.to_owned(), variable_type.clone());
-
       if let &Some(ref right) = right {
         match right.node {
           Function(..) | Block(_) | If(..) | While(..) => (),
@@ -893,7 +1062,7 @@ impl<'v> Visitor<'v> {
           if !variable_type.node.check_expression(&Parser::fold_expression(right)?.node) && variable_type.node != right_type.node {
             return Err(
               response!(
-                Wrong(format!("mismatched types, expected type `{}` got `{}`", variable_type.node, right_type)),
+                Wrong(format!("mismatched types, expe cted type `{}` got `{}`", variable_type.node, right_type.node)),
                 self.source.file,
                 right.pos
               )
@@ -943,7 +1112,11 @@ impl<'v> Visitor<'v> {
     use self::ExpressionNode::*;
 
     let t = match expression.node {
-      Identifier(ref name) => self.fetch(name, &expression.pos)?,
+      Identifier(ref name) => {
+        let t = self.fetch(name, &expression.pos)?;
+
+        self.deid(t)?
+      }
 
       Str(_)   => Type::from(TypeNode::Str),
       Char(_)  => Type::from(TypeNode::Char),
@@ -951,7 +1124,99 @@ impl<'v> Visitor<'v> {
       Int(_)   => Type::from(TypeNode::Int(32)),
       Float(_) => Type::from(TypeNode::Float(32)),
 
-      Array(ref content)  => Type::array(self.type_expression(content.first().unwrap())?, Some(content.len())),
+      Array(ref content)          => Type::array(self.type_expression(content.first().unwrap())?, Some(content.len())),
+      Initialization(ref name, _) => Type::from(self.type_expression(name)?.node),
+
+      Struct(ref name, ref params, ref id) => {
+        let mut param_hash = HashMap::new();
+
+        for param in params {
+          param_hash.insert(param.0.clone(), param.1.clone());
+        }
+
+        Type::new(TypeNode::Struct(name.to_owned(), param_hash, id.to_string()), TypeMode::Undeclared)
+      },
+
+      Index(ref array, ref index) => {
+        let mut kind = self.type_expression(array)?;
+
+        match kind.node {
+          TypeNode::Array(ref t, _) => (**t).clone(),
+          TypeNode::Any             => Type::new(TypeNode::Any, kind.mode), 
+
+          TypeNode::Module(ref content) => {
+            if let Identifier(ref name) = index.node {
+              if let Some(kind) = content.get(name) {
+                kind.clone()
+              } else {
+                return Err(
+                  response!(
+                    Wrong(format!("no such module member `{}`", name)),
+                    self.source.file,
+                    index.pos
+                  )
+                )
+              }
+            } else {
+              unreachable!()
+            }
+          },
+
+          TypeNode::Struct(ref struct_name, ref content, ref struct_id) => {
+            if let Identifier(ref name) = index.node {
+              if !self.is_implemented(struct_id, name) {
+
+                if let Some(kind2) = content.get(name) {
+                  if kind.mode.strong_cmp(&TypeMode::Undeclared) {
+
+                    if kind2.is_method() {
+                      return Err(
+                        response!(
+                          Wrong(format!("can't access non-static method `{}` on undeclared `{}`", name, struct_name)),
+                          self.source.file,
+                          index.pos
+                        )
+                      )
+                    } else if !kind2.mode.strong_cmp(&TypeMode::Implemented) {
+                      return Err(
+                        response!(
+                          Wrong(format!("can't access uninitialized value `{}` on undeclared `{}`", name, struct_name)),
+                          self.source.file,
+                          index.pos
+                        )
+                      )
+                    }
+
+                  }
+                  
+                  kind2.clone()
+                } else {
+                  return Err(
+                    response!(
+                      Wrong(format!("no such struct member `{}`", name)),
+                      self.source.file,
+                      index.pos
+                    )
+                  )
+                }
+
+              } else {
+                self.symtab.get_implementation_force(struct_id, name)
+              }
+            } else {
+              unreachable!()
+            }
+          },
+
+          _ => return Err(
+            response!(
+              Wrong(format!("can't index type `{}`", kind)),
+              self.source.file,
+              expression.pos
+            )
+          ),
+        }
+      },
 
       Call(ref expression, _) => {
         if let TypeNode::Func(_, ref return_type, ..) = self.type_expression(expression)?.node {
@@ -968,7 +1233,9 @@ impl<'v> Visitor<'v> {
           param_types.push(param.1.clone())
         }
 
-        Type::from(TypeNode::Func(param_types, Rc::new(return_type.clone()), Some(Rc::new(expression.node.clone())), is_method))
+        let return_type = self.deid(return_type.clone())?;
+
+        Type::from(TypeNode::Func(param_types, Rc::new(return_type), Some(Rc::new(expression.node.clone())), is_method))
       },
 
       Block(ref statements) => {
@@ -1061,10 +1328,142 @@ impl<'v> Visitor<'v> {
 
       Cast(_, ref t) => t.to_owned(),
 
+      Binary(ref left, ref op, ref right) => {
+        use self::Operator::*;
+
+        match (self.type_expression(left)?.node, op, self.type_expression(right)?.node) {
+          (ref a, ref op, ref b) => match **op {
+            Add | Sub | Mul | Div | Mod => if [a, b] != [&TypeNode::Nil, &TypeNode::Nil] { // real hack here
+              if a == b {
+                match a {
+                  TypeNode::Float(_) | TypeNode::Int(_) | TypeNode::UInt(_) => match b {
+                    TypeNode::Float(_) | TypeNode::Int(_) | TypeNode::UInt(_) => {
+                      Type::from(a.clone())
+                    },
+
+                    _ => return Err(
+                      response!(
+                        Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                        self.source.file,
+                        expression.pos
+                      )
+                    )
+                  },
+
+                  _ => return Err(
+                    response!(
+                      Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                      self.source.file,
+                      expression.pos
+                    )
+                  )
+                }
+              } else {
+                return Err(
+                  response!(
+                    Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                    self.source.file,
+                    expression.pos
+                  )
+                )
+              }
+            } else {
+              return Err(
+                response!(
+                  Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                  self.source.file,
+                  expression.pos
+                )
+              )
+            },
+
+            Pow => {
+              match a {
+                TypeNode::Float(_) | TypeNode::Int(_) | TypeNode::UInt(_) => match b {
+                  TypeNode::Float(_) | TypeNode::Int(_) | TypeNode::UInt(_) => {
+                    Type::from(a.clone())
+                  },
+
+                  _ => return Err(
+                    response!(
+                      Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                      self.source.file,
+                      expression.pos
+                    )
+                  )
+                },
+
+                _ => return Err(
+                  response!(
+                    Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                    self.source.file,
+                    expression.pos
+                  )
+                )
+              }
+            },
+
+            And | Or => if a == b && *a == TypeNode::Bool {
+              Type::from(TypeNode::Bool)
+            } else {
+              return Err(
+                response!(
+                  Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                  self.source.file,
+                  expression.pos
+                )
+              )
+            },
+
+            Concat => if *a == TypeNode::Str {
+              match *b {
+                TypeNode::Func(..) | TypeNode::Array(..) => return Err(
+                  response!(
+                    Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                    self.source.file,
+                    expression.pos
+                  )
+                ),
+
+                _ => Type::from(TypeNode::Str)
+              }
+            } else {
+              return Err(
+                response!(
+                  Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                  self.source.file,
+                  expression.pos
+                )
+              )
+            },
+
+            Eq | Lt | Gt | NEq | LtEq | GtEq => if a == b {
+              Type::from(TypeNode::Bool)
+            } else {
+              return Err(
+                response!(
+                  Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                  self.source.file,
+                  expression.pos
+                )
+              )
+            },
+
+            _ => return Err(
+              response!(
+                Wrong(format!("can't perform operation `{} {} {}`", a, op, b)),
+                self.source.file,
+                expression.pos
+              )
+            )
+          },
+        }
+      },
+
       _ => Type::from(TypeNode::Nil)
     };
 
-    Ok(t)
+    self.deid(t)
   }
 
 
@@ -1099,6 +1498,92 @@ impl<'v> Visitor<'v> {
       }
 
       self.visit_statement(&statement)?
+    }
+
+    Ok(())
+  }
+
+  pub fn visit_implement_block(&mut self, ast: &Vec<Statement>,
+    struct_name: &String,
+    new_content: &HashMap<String, Type>,
+    id: &String,
+    kind: &Type,
+    module_content: Option<&HashMap<String, Type>>,
+    is_index: bool,
+  ) -> Result<(), ()> {
+    let mut new_content = new_content.clone();
+
+    for (i, statement) in ast.iter().enumerate() {
+
+      // don't visit function bodies
+      if let StatementNode::Variable(_, ref name, ref right) = statement.node {
+        if let Some(ref right) = *right {
+          if let ExpressionNode::Function(ref params, ref retty, .., is_method) = right.node {
+
+            let mut types = params.iter().map(|x| x.1.clone()).collect::<Vec<Type>>();
+
+            let t = Type::from(
+              TypeNode::Func(types, Rc::new(retty.clone()), Some(Rc::new(right.node.clone())), is_method)
+            );
+
+            // set type on struct, on the fucking fly wthf
+
+            new_content.insert(name.clone(), Type::new(t.node.clone(), TypeMode::Implemented));
+
+            let kind = Type::new(TypeNode::Struct(struct_name.clone(), new_content.clone(), id.clone()), kind.mode.clone());
+
+            // we have strong computers in 2018
+            self.inside.pop();
+            self.inside.push(Inside::Implement(kind.clone()));
+
+            self.assign_str("self", kind.clone());
+
+            if is_index {
+              self.symtab.implement(id, name.clone(), Type::new(t.node.clone(), TypeMode::Implemented));
+
+              let mut new_module_content = module_content.unwrap().clone();
+
+              new_module_content.insert(name.to_string(), kind.clone());
+
+              self.assign(struct_name.to_owned(), kind.clone());
+            } else {
+              self.symtab.implement(id, name.clone(), Type::new(t.node.clone(), TypeMode::Implemented));
+
+              self.assign(struct_name.to_owned(), kind.clone());
+            }
+
+            self.assign(name.to_owned(), t);
+
+            continue
+          }
+        } else {
+          return Err(
+            response!(
+              Wrong("expected function definition"),
+              self.source.file,
+              statement.pos
+            )
+          )
+        }
+      } else {
+        return Err(
+          response!(
+            Wrong("expected function definition"),
+            self.source.file,
+            statement.pos
+          )
+        )
+      }
+    }
+
+    for statement in ast {
+      if let StatementNode::Variable(.., ref right) = statement.node {
+        if let Some(ref right) = *right {
+          if let ExpressionNode::Function(..) = right.node {
+            self.visit_statement(statement)?
+          }
+        }
+      }
     }
 
     Ok(())
@@ -1212,6 +1697,16 @@ impl<'v> Visitor<'v> {
 
   fn pop_scope(&mut self) {
     self.symtab.pop()
+  }
+
+
+
+  pub fn deid(&mut self, t: Type) -> Result<Type, ()> {
+    if let TypeNode::Id(ref expr) = t.node {
+      self.type_expression(expr)
+    } else {
+      Ok(t)
+    }
   }
 
 

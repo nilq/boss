@@ -11,14 +11,34 @@ fn main() {
   let test = r#"
 a: i32 = 1
 
-fib: fun(x: i32) -> i32 {
-  x
+Foo: struct {
+  x: i8
+  y: i8
+}
+
+implement Foo {
+  get_x: fun(self) -> i8 {
+    self x + 10 as i8
+  }
+}
+
+fib: fun(x: i32) -> Foo {
+  foo := new Foo {
+    x: 0
+    y: 0
+  }
+
+  foo
 }
 
 {
-  a: f32 = 10
+  a: f32 = 10.0 + 100 as f32
 
-  b: str = fib(10)
+  b: Foo = fib(10)
+
+  fib := 100 as u8
+
+  b: i8 = b get_x()
 }
   "#;
 

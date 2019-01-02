@@ -140,6 +140,10 @@ impl SymTab {
     self.implementations.get(id)
   }
 
+  pub fn get_implementation_force(&self, id: &String, method_name: &String) -> Type {
+    self.get_implementations(id).unwrap().get(method_name).unwrap().clone()
+  }
+
   pub fn implement(&mut self, id: &String, method_name: String, method_type: Type) {
     if let Some(ref mut content) = self.implementations.get_mut(id) {
       content.insert(method_name, method_type);
