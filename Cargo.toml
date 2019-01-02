@@ -1,0 +1,7 @@
+[package]
+name = "boss"
+version = "0.1.0"
+authors = ["Niels Nielsen <slein.nroh@gmail.com>"]
+edition = "2018"
+
+[dependencies]
