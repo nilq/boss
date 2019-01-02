@@ -6,7 +6,6 @@ use std::rc::Rc;
 use super::visitor::*;
 
 
-
 #[derive(Debug, Clone)]
 pub struct Frame {
   pub table: RefCell<HashMap<String, Type>>,
@@ -46,6 +45,8 @@ impl Frame {
 pub struct SymTab {
   pub stack:  Vec<Frame>, // active frames
   pub record: Vec<Frame>, // popped frames
+
+  pub implementations: HashMap<String, HashMap<String, Type>>,
 }
 
 impl SymTab {
@@ -53,13 +54,15 @@ impl SymTab {
     SymTab {
       stack:  vec!(Frame::new(0)),
       record: Vec::new(),
+      implementations: HashMap::new(),
     }
   }
 
   pub fn from(table: HashMap<String, Type>) -> Self {
     SymTab {
       stack:  vec!(Frame::from(table, 0)),
-      record: Vec::new()
+      record: Vec::new(),
+      implementations: HashMap::new(),
     }
   }
 
@@ -76,45 +79,31 @@ impl SymTab {
 
 
   pub fn fetch(&self, name: &String) -> Option<Type> {
-    let mut offset = 1;
+    let mut offset = self.stack.len() - 1;
 
     loop {
       let len = self.stack.len();
 
-      if offset > self.stack.len() - 1 {
+      if offset < 0 {
         return None
       }
 
-      if let Some(t) = self.stack[len - offset].get(name) {
+      if let Some(t) = self.stack[offset].get(name) {
         return Some(t)
       } else {
-        offset += 1;
+        offset -= 1;
       }
     }
   }
 
   pub fn fetch_str(&self, name: &str) -> Option<Type> {
-    let mut offset = 0;
-
-    loop {
-      let len = self.stack.len();
-
-      if let Some(t) = self.stack[len - offset].get(&name.to_string()) {
-        return Some(t)
-      } else {
-        offset += 1;
-
-        if offset == self.stack.len() {
-          return None
-        }
-      }
-    }
+    self.fetch(&name.to_string())
   }
 
 
 
   pub fn revert_frame(&mut self) {
-    self.stack.push(self.record.last().unwrap().clone());
+    self.stack.push(self.record.pop().unwrap().clone());
   }
 
 
@@ -129,6 +118,12 @@ impl SymTab {
 
 
 
+  pub fn put_frame(&mut self, frame: Frame) {
+    self.stack.push(frame)
+  }
+
+
+
   pub fn push(&mut self) {
     self.stack.push(Frame::new(self.stack.len()))
   }
@@ -137,5 +132,25 @@ impl SymTab {
     let popped = self.stack.pop().unwrap();
 
     self.record.push(popped)
+  }
+
+
+
+  pub fn get_implementations(&self, id: &String) -> Option<&HashMap<String, Type>>  {
+    self.implementations.get(id)
+  }
+
+  pub fn implement(&mut self, id: &String, method_name: String, method_type: Type) {
+    if let Some(ref mut content) = self.implementations.get_mut(id) {
+      content.insert(method_name, method_type);
+
+      return
+    }
+
+    let mut hash = HashMap::new();
+
+    hash.insert(method_name, method_type);
+
+    self.implementations.insert(id.to_owned(), hash);
   }
 }

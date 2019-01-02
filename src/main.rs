@@ -11,10 +11,14 @@ fn main() {
   let test = r#"
 a: i32 = 1
 
+fib: fun(x: i32) -> i32 {
+  x
+}
+
 {
   a: f32 = 10
 
-  b: i32 = a
+  b: str = fib(10)
 }
   "#;
 

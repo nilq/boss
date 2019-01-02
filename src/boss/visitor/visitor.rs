@@ -571,6 +571,286 @@ impl<'v> Visitor<'v> {
         Ok(())
       },
 
+      Call(ref expr, ref args) => {
+        self.visit_expression(expr)?;
+
+        self.inside.push(Inside::Calling(expr.pos.clone()));
+
+        let expression_type = self.type_expression(expr)?;
+
+        if let TypeNode::Func(ref params, _, ref func, .., is_method) = expression_type.node {
+          // this is where we visit the func, no diggity
+          if let Some(func) = func {
+            self.visit_expression(
+              &Expression::new(
+                (**func).clone(),
+                expression.pos.clone()
+              )
+            )?;
+          }
+
+          if is_method {
+            self.method_calls.insert(expression.pos.clone(), true);
+          }
+
+          let mut actual_arg_len            = args.len();
+          let mut type_buffer: Option<Type> = None;
+
+          for (i, param_type) in params.iter().enumerate() {
+            let arg_type   = self.type_expression(&args[i])?;
+
+            if !param_type.node.check_expression(&Parser::fold_expression(&args[i])?.node) && arg_type.node != param_type.node {
+              return Err(
+                response!(
+                  Wrong(format!("mismatched types, expected type `{}` got `{}`", param_type.node, arg_type)),
+                  self.source.file,
+                  args[i].pos
+                )
+              )
+            }
+
+            let arg_type = if i < args.len() {
+              self.type_expression(&args[i])?
+            } else {
+              type_buffer.as_ref().unwrap().clone()
+            };
+
+            let mode = arg_type.mode.clone();
+
+            if let TypeMode::Unwrap(ref len) = mode {
+              type_buffer = Some(arg_type.clone());
+
+              actual_arg_len += len
+            }
+          }
+
+          if actual_arg_len > params.len() {
+            let last = params.last().unwrap();
+
+            if let TypeMode::Splat(_) = last.mode {
+              for splat in &args[params.len()..] {
+                let splat_type = self.type_expression(&splat)?;
+
+                if !last.node.check_expression(&splat.node) && last.node != splat_type.node {
+                  return Err(
+                    response!(
+                      Wrong(format!("mismatched splat argument, expected `{}` got `{}`", last, splat_type)),
+                      self.source.file,
+                      splat.pos
+                    )
+                  )
+                }
+              }
+            }
+
+            self.inside.push(Inside::Splat(Some(actual_arg_len - params.len())))
+          }
+
+          self.visit_expression(expr)?;
+
+          self.inside.pop();
+
+          if actual_arg_len != params.len() {
+            match params.last().unwrap().mode {
+              TypeMode::Splat(_) => (),
+              _                  => return Err(
+                response!(
+                  Wrong(format!("expected {} argument{} got {}", params.len(), if params.len() > 1 { "s" } else { "" }, actual_arg_len)),
+                  self.source.file,
+                  args.last().unwrap_or(expression).pos
+                )
+              )
+            }
+          }
+        }
+
+        Ok(())
+      },
+
+      Function(ref params, ref retty, ref body, ref is_method) => {
+        let mut frame_hash = HashMap::new();
+
+        let mut return_type = retty.clone();
+
+        if let TypeNode::Id(ref ident) = retty.node {
+          self.visit_expression(&ident)?;
+
+          let ident_type = self.type_expression(&ident)?;
+
+          if let TypeNode::Struct(..) = ident_type.node {
+            return_type = Type::from(ident_type.node)
+          } else {
+            return Err(
+              response!(
+                Wrong(format!("can't use `{}` as type", ident_type)),
+                self.source.file,
+                ident.pos
+              )
+            )
+          }
+        }
+
+        return_type = Type::from(return_type.node.clone());
+
+        for param in params.iter() {
+          frame_hash.insert(param.0.clone(), param.1.clone());
+        }
+
+        if *is_method {
+          let mut found = false;
+
+          for inside in self.inside.iter().rev() { // ffs
+            if let Inside::Implement(ref t) = inside {
+              found = true;
+
+              frame_hash.insert("self".to_string(), Type::from(t.node.clone()));
+            }
+          }
+
+          if !found {
+            return Err(
+              response!(
+                Wrong("can't define method outside implementation"),
+                self.source.file,
+                expression.pos
+              )
+            )
+          }
+        }
+
+        self.symtab.put_frame(Frame::from(frame_hash, self.symtab.stack.len()));
+
+        self.inside.push(Inside::Function);
+
+        self.visit_expression(body)?;
+
+        self.symtab.revert_frame(); // we'll need those
+
+        let body_type = self.type_expression(body)?;
+
+        self.pop_scope(); // we don't need those anymore
+
+        self.inside.pop();
+
+        self.pop_scope();
+
+        if return_type.node != body_type.node {
+          Err(
+            response!(
+              Wrong(format!("mismatched return type, expected `{}` got `{}`", return_type, body_type)),
+              self.source.file,
+              body.pos
+            )
+          )
+        } else {
+          Ok(())
+        }
+      },
+
+      Index(ref left, ref index) => {
+        let left_type = self.type_expression(left)?;
+
+        match left_type.node {
+          TypeNode::Array(_, ref len) => {
+            self.inside.push(Inside::Nothing);
+
+            self.visit_expression(index)?;
+
+            let index_type = self.type_expression(index)?;
+
+            match index_type.node {
+              TypeNode::UInt(_) => {
+                if let Int(ref a) = Parser::fold_expression(index)?.node {
+                  if let Some(len) = len {
+                    if *a as usize > *len {
+                      return Err(
+                        response!(
+                          Wrong(format!("index out of bounds, len is {} got {}", len, a)),
+                          self.source.file,
+                          left.pos
+                        )
+                      )
+                    }
+                  }
+                }
+              },
+
+              _ => return Err(
+                response!(
+                  Wrong(format!("can't index with `{}`, must be unsigned integer", index_type)),
+                  self.source.file,
+                  left.pos
+                )
+              )
+            }
+          },
+
+          TypeNode::Module(ref content) => {
+            self.inside.push(Inside::Nothing);
+
+            if let Identifier(ref name) = index.node {
+              if !content.contains_key(name) {
+                return Err(
+                  response!(
+                    Wrong(format!("no such module member `{}`", name)),
+                    self.source.file,
+                    index.pos
+                  )
+                )
+              }
+            } else {
+              let index_type = self.type_expression(index)?;
+
+              return Err(
+                response!(
+                  Wrong(format!("can't index module with `{}`", index_type)),
+                  self.source.file,
+                  index.pos
+                )
+              )
+            }
+          },
+
+          TypeNode::Struct(_, ref content, ref id) => {
+            self.inside.push(Inside::Implement(left_type.clone()));
+
+            if let Identifier(ref name) = index.node {
+              if !content.contains_key(name) && !self.is_implemented(id, name) {
+                return Err(
+                  response!(
+                    Wrong(format!("no such struct member `{}`", name)),
+                    self.source.file,
+                    index.pos
+                  )
+                )
+              }
+            } else {
+              let index_type = self.type_expression(index)?;
+
+              return Err(
+                response!(
+                  Wrong(format!("can't index struct with `{}`", index_type)),
+                  self.source.file,
+                  index.pos
+                )
+              )
+            }
+          },
+
+          TypeNode::Any => (),
+
+          _ => return Err(
+            response!(
+              Wrong(format!("can't index type `{}`", left_type)),
+              self.source.file,
+              left.pos
+            )
+          )
+        }
+
+        Ok(())
+      },
+
       _ => Ok(())
     }
   }
@@ -672,6 +952,14 @@ impl<'v> Visitor<'v> {
       Float(_) => Type::from(TypeNode::Float(32)),
 
       Array(ref content)  => Type::array(self.type_expression(content.first().unwrap())?, Some(content.len())),
+
+      Call(ref expression, _) => {
+        if let TypeNode::Func(_, ref return_type, ..) = self.type_expression(expression)?.node {
+          (**return_type).clone()
+        } else {
+          panic!("BAM! (please submit an issue): called {:#?}", self.type_expression(expression)?.node)
+        }
+      },
 
       Function(ref params, ref return_type, _, is_method) => {
         let mut param_types = Vec::new();
@@ -924,5 +1212,15 @@ impl<'v> Visitor<'v> {
 
   fn pop_scope(&mut self) {
     self.symtab.pop()
+  }
+
+
+
+  pub fn is_implemented(&mut self, struct_id: &String, method_name: &String) -> bool {
+    if let Some(ref content) = self.symtab.get_implementations(struct_id) {
+      return content.contains_key(method_name)
+    }
+
+    false
   }
 }
