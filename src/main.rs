@@ -9,7 +9,13 @@ use self::boss::visitor::*;
 
 fn main() {
   let test = r#"
-a: i32 = r"hey"
+a: i32 = 1
+
+{
+  a: f32 = 10
+
+  b: i32 = a
+}
   "#;
 
   let source = Source::from("<main>", test.lines().map(|x| x.into()).collect::<Vec<String>>());

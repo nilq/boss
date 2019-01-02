@@ -76,19 +76,19 @@ impl SymTab {
 
 
   pub fn fetch(&self, name: &String) -> Option<Type> {
-    let mut offset = 0;
+    let mut offset = 1;
 
     loop {
       let len = self.stack.len();
+
+      if offset > self.stack.len() - 1 {
+        return None
+      }
 
       if let Some(t) = self.stack[len - offset].get(name) {
         return Some(t)
       } else {
         offset += 1;
-
-        if offset == self.stack.len() {
-          return None
-        }
       }
     }
   }
@@ -124,7 +124,6 @@ impl SymTab {
   }
 
   pub fn current_frame_mut(&mut self) -> &mut Frame {
-    println!("{:#?}", self.stack);
     self.stack.last_mut().unwrap()
   }
 
@@ -135,7 +134,6 @@ impl SymTab {
   }
 
   pub fn pop(&mut self) {
-    println!("pop", );
     let popped = self.stack.pop().unwrap();
 
     self.record.push(popped)

@@ -371,7 +371,208 @@ impl<'v> Visitor<'v> {
   }
 
   fn visit_expression(&mut self, expression: &Expression) -> Result<(), ()> {
-    Ok(())
+    use self::ExpressionNode::*;
+
+    match expression.node {
+      Identifier(ref name) => {
+        self.fetch(name, &expression.pos)?;
+
+        Ok(())
+      },
+
+      Neg(ref expr) => {
+        let expr_type = self.type_expression(expr)?;
+
+        match expr_type.node {
+          TypeNode::Float(_) | TypeNode::Int(_) => Ok(()),
+          
+          _ => Err(
+            response!(
+              Wrong(format!("can't negate type `{}`", expr_type)),
+              self.source.file,
+              expression.pos
+            )
+          )
+        }
+      },
+
+      Not(ref expr) => {
+        let expr_type = self.type_expression(expr)?;
+
+        if expr_type.node.strong_cmp(&TypeNode::Bool) {
+          Ok(())
+        } else {
+          Err(
+            response!(
+              Wrong(format!("can't negate type `{}`", expr_type)),
+              self.source.file,
+              expression.pos
+            )
+          )
+        }
+      },
+
+      Block(ref statements) => {
+        self.push_scope();
+
+        self.visit_block(statements, true)?;
+
+        self.pop_scope();
+
+        Ok(())
+      },
+
+      If(ref condition, ref body, ref elses) => {
+        self.visit_expression(&*condition)?;
+
+        let condition_type = self.type_expression(&*condition)?.node;
+
+        if condition_type == TypeNode::Bool {
+
+          self.push_scope();
+
+          self.visit_expression(body)?;
+          let body_type = self.type_expression(body)?;
+
+          self.pop_scope();
+
+          if let &Some(ref elses) = elses {
+            for &(ref maybe_condition, ref body, _) in elses {
+              if let Some(ref condition) = *maybe_condition {
+                let condition_type = self.type_expression(condition)?.node;
+
+                if condition_type != TypeNode::Bool {
+                  return Err(
+                    response!(
+                      Wrong(format!("mismatched condition, must be `bool` got `{}`", condition_type)),
+                      self.source.file,
+                      condition.pos
+                    )
+                  )
+                }
+              }
+
+              self.push_scope();
+
+              self.visit_expression(body)?;
+              let else_body_type = self.type_expression(body)?;
+
+              self.pop_scope();
+
+              if body_type != else_body_type {
+                return Err(
+                  response!(
+                    Wrong(format!("mismatched types, expected `{}` got `{}`", body_type, else_body_type)),
+                    self.source.file,
+                    body.pos
+                  )
+                )
+              }
+            }
+          }
+
+          Ok(())
+
+        } else {
+          return Err(
+            response!(
+              Wrong(format!("mismatched condition, must be `bool` got `{}`", condition_type)),
+              self.source.file,
+              expression.pos
+            )
+          )
+        }
+      },
+
+      While(ref condition, ref body) => {
+        self.visit_expression(&*condition)?;
+
+        let condition_type = self.type_expression(&*condition)?.node;
+
+        if condition_type == TypeNode::Bool {
+          self.inside.push(Inside::Loop);
+
+          self.push_scope();
+
+          self.visit_expression(body)?;
+
+          let body_type = self.type_expression(body)?;
+
+          if body_type.node != TypeNode::Nil {
+            let body_pos = if let Block(ref content) = body.node {
+              content.last().unwrap().pos.clone()
+            } else {
+              unreachable!()
+            };
+            
+            return Err(
+              response!(
+                Wrong("mismatched types, expected `()`"),
+                self.source.file,
+                body_pos
+              )
+            )
+          }
+
+          self.pop_scope();
+
+          self.inside.pop();
+
+          Ok(())
+
+        } else {
+          return Err(
+            response!(
+              Wrong(format!("mismatched condition, must be `bool` got `{}`", condition_type)),
+              self.source.file,
+              expression.pos
+            )
+          )
+        }
+      },
+
+      Array(ref content) => {
+        let t = self.type_expression(content.first().unwrap())?;
+
+        for element in content {
+          let element_type = self.type_expression(element)?;
+
+          if !t.node.check_expression(&Parser::fold_expression(element)?.node) && t.node != element_type.node {
+            return Err(
+              response!(
+                Wrong(format!("mismatched types in array, expected `{}` got `{}`", t, element_type)),
+                self.source.file,
+                element.pos
+              )
+            )
+          }
+        }
+
+        Ok(())
+      },
+
+      Struct(_, ref params, _) => {
+        let mut name_buffer = Vec::new();
+
+        for &(ref name, _) in params.iter() {
+          if name_buffer.contains(&name) {
+            return Err(
+              response!(
+                Wrong(format!("field `{}` defined more than once", name)),
+                self.source.file,
+                expression.pos
+              )
+            )
+          }
+
+          name_buffer.push(&name)
+        }
+
+        Ok(())
+      },
+
+      _ => Ok(())
+    }
   }
 
   fn visit_variable(&mut self, variable: &StatementNode, pos: &Pos) -> Result<(), ()> {
@@ -462,6 +663,8 @@ impl<'v> Visitor<'v> {
     use self::ExpressionNode::*;
 
     let t = match expression.node {
+      Identifier(ref name) => self.fetch(name, &expression.pos)?,
+
       Str(_)   => Type::from(TypeNode::Str),
       Char(_)  => Type::from(TypeNode::Char),
       Bool(_)  => Type::from(TypeNode::Bool),
