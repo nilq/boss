@@ -799,13 +799,27 @@ impl<'p> Parser<'p> {
       Identifier => match self.eat()?.as_str() {
         "str"   => Type::from(TypeNode::Str),
         "char"  => Type::from(TypeNode::Char),
-        "int"   => Type::from(TypeNode::Int),
+
+        "i8"    => Type::from(TypeNode::Int(8)),
+        "i16"   => Type::from(TypeNode::Int(16)),
+        "i32"   => Type::from(TypeNode::Int(32)),
+        "i64"   => Type::from(TypeNode::Int(64)),
+        "i128"  => Type::from(TypeNode::Int(128)),
+
+        "u8"    => Type::from(TypeNode::UInt(8)),
+        "u16"   => Type::from(TypeNode::UInt(16)),
+        "u32"   => Type::from(TypeNode::UInt(32)),
+        "u64"   => Type::from(TypeNode::UInt(64)),
+        "u128"  => Type::from(TypeNode::UInt(128)),
+
+        "f32"   => Type::from(TypeNode::Float(32)),
+        "f64"   => Type::from(TypeNode::Float(64)),
+
         "any"   => Type::from(TypeNode::Any),
-        "float" => Type::from(TypeNode::Float),
         "bool"  => Type::from(TypeNode::Bool),
         "self"  => Type::from(TypeNode::This),
 
-        _       => {
+        _ => {
           self.index -= 1; // lol
           Type::id(Rc::new(self.parse_expression()?))
         }
@@ -894,6 +908,7 @@ impl<'p> Parser<'p> {
 
           let splatted = if self.current_lexeme() == ")" || self.remaining() == 0 {
             Type::from(TypeNode::Any)
+
           } else {
             self.parse_type()?
           };

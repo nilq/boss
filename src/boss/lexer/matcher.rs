@@ -237,7 +237,13 @@ impl<'t> Matcher<'t> for StringLiteralMatcher {
     tokenizer.advance();
 
     if delimeter == '"' {
-      Ok(Some(token!(tokenizer, Str, string)))
+      let mut token = token!(tokenizer, Str, string);
+
+      if raw_marker {
+        token.slice.1 += 1
+      }
+
+      Ok(Some(token))
     } else {
       if string.len() > 1 {
         let pos = tokenizer.last_position();
@@ -248,7 +254,7 @@ impl<'t> Matcher<'t> for StringLiteralMatcher {
             tokenizer.source.file,
             Pos(
               (pos.0, tokenizer.source.lines.get(pos.0.saturating_sub(1)).unwrap_or(tokenizer.source.lines.last().unwrap()).to_string()),
-              (pos.1 + 2, pos.1 + string.len() + 1),
+              (pos.1 + 2, pos.1 + string.len() + 1 + if raw_marker { 1 } else { 0 }),
             )
           )
         )

@@ -1,14 +1,15 @@
+extern crate colored;
+
 mod boss;
 
 use self::boss::source::*;
 use self::boss::lexer::*;
 use self::boss::parser::*;
+use self::boss::visitor::*;
 
 fn main() {
   let test = r#"
-print: fun (bar: int) {
-  x: int = bar
-}
+a: i32 = r"hey"
   "#;
 
   let source = Source::from("<main>", test.lines().map(|x| x.into()).collect::<Vec<String>>());
@@ -28,7 +29,11 @@ print: fun (bar: int) {
 
   match parser.parse() {
     Ok(ref ast) => {
-      println!("{:#?}", ast)
+      println!("{:#?}", ast);
+
+      let mut visitor = Visitor::new(&ast, &source);
+
+      visitor.visit();
     },
 
     _ => ()

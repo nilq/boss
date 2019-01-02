@@ -51,7 +51,7 @@ pub struct SymTab {
 impl SymTab {
   pub fn new() -> Self {
     SymTab {
-      stack:  Vec::new(),
+      stack:  vec!(Frame::new(0)),
       record: Vec::new(),
     }
   }
@@ -113,11 +113,18 @@ impl SymTab {
 
 
 
+  pub fn revert_frame(&mut self) {
+    self.stack.push(self.record.last().unwrap().clone());
+  }
+
+
+
   pub fn current_frame(&self) -> &Frame {
     self.stack.last().unwrap()
   }
 
   pub fn current_frame_mut(&mut self) -> &mut Frame {
+    println!("{:#?}", self.stack);
     self.stack.last_mut().unwrap()
   }
 
@@ -128,6 +135,7 @@ impl SymTab {
   }
 
   pub fn pop(&mut self) {
+    println!("pop", );
     let popped = self.stack.pop().unwrap();
 
     self.record.push(popped)
