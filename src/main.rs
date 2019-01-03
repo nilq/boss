@@ -1,4 +1,5 @@
 extern crate colored;
+extern crate backtrace;
 
 mod boss;
 
@@ -40,6 +41,19 @@ fib: fun(x: i32) -> Foo {
 
   b: i8 = b get_x()
 }
+
+
+Vector: struct {
+  x: f32
+  y: f32
+}
+
+implement Vector {
+  len: fun(self) -> Self {
+    self
+  }
+}
+
   "#;
 
   let source = Source::from("<main>", test.lines().map(|x| x.into()).collect::<Vec<String>>());
@@ -59,8 +73,6 @@ fib: fun(x: i32) -> Foo {
 
   match parser.parse() {
     Ok(ref ast) => {
-      println!("{:#?}", ast);
-
       let mut visitor = Visitor::new(&ast, &source);
 
       visitor.visit();

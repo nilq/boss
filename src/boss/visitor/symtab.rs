@@ -38,6 +38,14 @@ impl Frame {
   pub fn assign(&mut self, name: String, t: Type) {
     self.table.borrow_mut().insert(name, t);
   }
+
+  pub fn debug(&self) {
+    for (name, t) in self.table.borrow().iter() {
+      println!("{} = {}", name, t)
+    }
+
+    println!()
+  }
 }
 
 
@@ -91,6 +99,10 @@ impl SymTab {
       if let Some(t) = self.stack[offset].get(name) {
         return Some(t)
       } else {
+        if offset == 0 {
+          return None
+        }
+
         offset -= 1;
       }
     }

@@ -363,7 +363,8 @@ impl<'v> Visitor<'v> {
         self.push_scope();
 
         let t = self.type_expression(name)?;
-        self.assign_str("Self", t);
+
+        self.assign_str("Self", t.clone());
 
         let position = name.pos.clone();
 
@@ -873,8 +874,6 @@ impl<'v> Visitor<'v> {
           for inside in self.inside.iter().rev() { // ffs
             if let Inside::Implement(ref t) = inside {
               found = true;
-
-              frame_hash.insert("self".to_string(), Type::from(t.node.clone()));
             }
           }
 
@@ -1245,6 +1244,8 @@ impl<'v> Visitor<'v> {
           self.flag = Some(FlagContext::Block(None))
         }
 
+        self.push_scope();
+
         let block_type = if statements.len() > 0 {
           for element in statements {
 
@@ -1536,7 +1537,7 @@ impl<'v> Visitor<'v> {
             self.inside.pop();
             self.inside.push(Inside::Implement(kind.clone()));
 
-            self.assign_str("self", kind.clone());
+            self.assign_str("self", Type::from(kind.node.clone()));
 
             if is_index {
               self.symtab.implement(id, name.clone(), Type::new(t.node.clone(), TypeMode::Implemented));
@@ -1656,6 +1657,11 @@ impl<'v> Visitor<'v> {
     if let Some(t) = self.symtab.fetch(name) {
       Ok(t)
     } else {
+      use backtrace::Backtrace;
+      let bt = Backtrace::new();
+
+      println!("{:?}", bt);
+
       Err(
         response!(
           Wrong(format!("can't seem to find `{}`", name)),
