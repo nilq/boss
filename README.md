@@ -2,6 +2,8 @@
 
 Boss is a gradually-typed programming with unreasonably many primitive types for a high-level language. It has structs, Rust-like implementations and runs on a low-end virtual machine.
 
+### Syntax
+
 The syntax looks basically like this:
 
 ```
